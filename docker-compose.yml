@@ -1,0 +1,108 @@
+version: '3.8'
+volumes:
+    postgres-data:
+    minio-storage:
+    # The volume for persisting geoserver data directory
+    geoserver-data:
+    sites-enabled:
+services:
+  db:
+    platform: linux/amd64
+    container_name: ${PROJECT_NAME}_${POSTGRES_HOST}
+    image: 'postgis/postgis:latest'
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - './postgres-data:/var/lib/postgresql/data'
+  pgadmin:
+    container_name: ${PROJECT_NAME}_${POSTGRES_HOST}_pg_admin
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+    ports:
+      - "5051:80"
+    restart: unless-stopped
+  minio:
+    container_name: ${PROJECT_NAME}_minio
+    image: minio/minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-storage:/data
+    environment:
+      MINIO_ROOT_USER: masoud
+      MINIO_ROOT_PASSWORD: Strong#Pass#2022
+    command: server --console-address ":9001" /data
+  valhalla:
+    container_name: ${PROJECT_NAME}_valhalla
+    image: ghcr.io/gis-ops/docker-valhalla/valhalla:latest
+    ports:
+      - 8002:8002
+    #build:
+    #  context: .
+    #  args:
+    #    - VALHALLA_UID=1000
+    #    - VALHALLA_GID=1000
+    volumes:
+      - ./custom_files/:/custom_files
+      # - ./gtfs_feeds:/gtfs_feeds  # only enable with build_transit=True
+    environment:
+      # Auto-download PBFs from Geofabrik
+      - tile_urls=https://download.geofabrik.de/asia/kazakhstan-latest.osm.pbf
+      - server_threads=2  # determines how many threads will be used to run the valhalla server
+      - serve_tiles=True  # If True, starts the service. If false, stops after building the graph.
+      - use_tiles_ignore_pbf=True  # load existing valhalla_tiles.tar directly
+      - tileset_name=valhalla_tiles  # name of the resulting graph on disk
+      - build_elevation=False  # build elevation with "True" or "Force": will download only the elevation for areas covered by the graph tiles
+      - build_admins=False  # build admins db with "True" or "Force"
+      - build_time_zones=False  # build timezone db with "True" or "Force"
+      - build_transit=False  # build transit, needs existing GTFS directories mapped to /gtfs_feeds
+      - build_tar=True  # build an indexed tar file from the tile_dir for faster graph loading times
+      - force_rebuild=False  # forces a rebuild of the routing tiles with "True"
+      - update_existing_config=True  # if there are new config entries in the default config, add them to the existing config
+      # - path_extension=graphs  # this path will be internally appended to /custom_files; no leading or trailing path separator!
+    # adapt to the expected build time
+    healthcheck:
+      test: curl --fail -s http://localhost:8002/status || exit 1
+      interval: 1s
+      retries: 10
+      start_period: 2s
+      timeout: 1s
+  geoserver:
+    platform: linux/amd64
+    container_name: geoserver
+    image: kartoza/geoserver:latest
+    ports:
+        - "${GEOSERVER_PORT}:8080"
+    volumes:
+        - geoserver-data:/opt/geoserver/data_dir
+    environment:
+        GEOSERVER_DATA_DIR: /opt/geoserver/data_dir
+        GEOSERVER_ADMIN_USER: ${GEOSERVER_USER}
+        GEOSERVER_ADMIN_PASSWORD: ${GEOSERVER_PASS}
+  nginx:
+      platform: linux/amd64
+      container_name: ${PROJECT_NAME}_nginx
+      image: nginx
+      volumes:
+        - ./sites-enabled:/etc/nginx/conf.d:ro
+      logging:
+        driver: json-file
+        options:
+          max-size: 200m
+          max-file: '10'
+      depends_on:
+        - geoserver
+      ports:
+        - "81:80"             
+networks:
+  default:
+    name: ${DOCKER_NETWORK_NAME}
+    #external: true
